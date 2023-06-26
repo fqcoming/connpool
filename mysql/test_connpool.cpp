@@ -33,6 +33,7 @@ int main(int argc, char *argv[]) {
 
 // mysql -u root -p 123456
 /****************************
+ *  create database chat;
     DROP TABLE chat.user;
     CREATE TABLE chat.user (
         name VARCHAR(255),
