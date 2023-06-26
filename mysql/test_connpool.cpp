@@ -34,7 +34,7 @@ double useConnpoolMultiThread(int connCnt, int numThread) {
     for (int i = 0; i < numThread; ++i) {
         threads.emplace_back([&]() {
             ConnectionPool *cp = ConnectionPool::getConnectionPool();
-            for (int i = 0; i < connCnt; ++i) {
+            for (int i = 0; i < connCntPerThread; ++i) {
                 std::shared_ptr<Connection> pconn = cp->getConnection();
                 char sql[1024] = {0};
                 sprintf(sql, "insert into user(name, age, sex) values('%s', %d, '%s')", "John", 24, "male");
@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
 
     double avg = 0;
     for (int i = 0; i < 2; ++i) {
-        avg += notUseConnpoolMultiThread(10000, 4);
+        avg += notUseConnpoolMultiThread(1000, 4);
     }
     avg /= 2;
     std::cout << "n thread not use connpool avg: " << avg << "ms" << std::endl;
@@ -140,7 +140,7 @@ int main(int argc, char *argv[]) {
 
     double avg = 0;
     for (int i = 0; i < 2; ++i) {
-        avg += useConnpoolMultiThread(10000, 4);
+        avg += useConnpoolMultiThread(5000, 4);
     }
     avg /= 2;
     std::cout << "n thread use connpool avg: " << avg << "ms" << std::endl;
