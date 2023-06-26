@@ -59,8 +59,23 @@ CREATE TABLE chat.user (
 
 ```shell
 g++ -o test_connpool test_connpool.cpp -lmysqlclient
+./test_connpool
 ```
 
+压力测试
+
+首先删除chat数据库中user的所有数据
+```sql
+select * from user;
+delete from user;
+desc user;
+```
+                 (单位ms)              (单位ms)
+update次数   未使用连接池花费时间    使用连接池花费时间
+               单线程   四线程        单线程   四线程
+1000           2585     14627         44      187
+5000           12607    75729         224     870
+10000          25450    156174        457     1757
 
 
 
