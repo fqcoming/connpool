@@ -77,8 +77,9 @@ public:
                    std::string dbname, std::string connpoolname = "mysql", 
                    int initSize = 4, int maxSize = 1024, int maxIdleTime = 60, int connTimeout = 100) 
                    : _ip(ip), _port(port), _username(username), _password(password), 
-                     _dbname(dbname), _connpoolname(connpoolname), 
-                     _initSize(initSize), _maxSize(maxSize), _maxIdleTime(maxIdleTime), _connTimeout(connTimeout) {
+                     _dbname(dbname), _connpoolname(connpoolname),
+                     _initSize(initSize), _maxSize(maxSize), _maxIdleTime(maxIdleTime), 
+                     _connTimeout(connTimeout), isRunning(true) {
 
         for (int i = 0; i < _initSize; ++i) {
             Connection *p = new Connection();
@@ -95,6 +96,15 @@ public:
         std::thread scanner(std::bind(&ConnectionPool::scannerConnectionTask, this));
         scanner.detach();
     }
+
+
+    ~ConnectionPool() {
+
+        isRunning = false;
+        _condVar.notify_one();
+        
+    }
+
 
     std::shared_ptr<Connection> getConnection() {
         std::unique_lock<std::mutex> lock(_queMutex);
@@ -134,11 +144,18 @@ public:
 private:
 
     void produceConnectionTask() {
-        for ( ; ; ) {
+        while (isRunning) {
             std::unique_lock<std::mutex> lock(_queMutex);
             while (!_connQue.empty()) {
+                if (!isRunning) {
+                    break;
+                }
                 _condVar.wait(lock);  // The queue is not empty, where the production thread enters a waiting state.
             }
+            if (!isRunning) {
+                break;
+            }
+
             if (_connCnt < _maxSize) {
                 Connection *p = new Connection();
                 p->connect(_ip, _port, _username, _password, _dbname);
@@ -148,11 +165,12 @@ private:
             }
             _condVar.notify_all();
         }
+        // std::cout << "produceConnectionTask exit." << std::endl;
     }
 
     void scannerConnectionTask() {
-        for (;;) {
 
+        while (isRunning) {
             // Simulate timing effects through sleep
             std::this_thread::sleep_for(std::chrono::seconds(_maxIdleTime));
 
@@ -169,6 +187,7 @@ private:
                 }
             }
         }
+        // std::cout << "scannerConnectionTask exit." << std::endl;
     }
 
 private:
@@ -188,6 +207,8 @@ private:
     std::mutex              _queMutex;
     std::atomic_int         _connCnt;
     std::condition_variable _condVar;
+
+    bool isRunning;
 };
 
 

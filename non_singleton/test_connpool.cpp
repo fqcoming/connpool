@@ -4,46 +4,57 @@
 #include "connpool_non_singleton.hpp"
 
 
+std::string ip = "127.0.0.1";
+unsigned short port = 3306;
+std::string username = "root";
+std::string password = "123456";
+std::string dbname = "chat";
+
 
 
 double UseConnpoolMultiThread(int numThread, int connCnt) {
 
     int connCntPerThread = connCnt / numThread;
-    std::vector<std::thread> threads;
+    std::vector<std::shared_ptr<std::thread>> threads;
     std::vector<double> timePerThreadExec(numThread, 0);
 
+	static std::shared_ptr<ConnectionPool> connpool(new ConnectionPool(ip, port, username, password, dbname));
+
+    {
+        std::shared_ptr<Connection> conn = connpool->getConnection();
+        char sql[1024] = {0};
+        sprintf(sql, "delete from stu;");
+        conn->update(sql);
+    }
+  
+    auto threadFunc = [&](int cntConn) {
+
+        for (int i = 0; i < cntConn; ++i) {
+            char sql[1024] = {0};
+            sprintf(sql, "insert into stu(name, age, sex) values('%s', %d, '%s')", "John", 24, "male");
+			std::shared_ptr<Connection> conn = connpool->getConnection();
+            conn->update(sql);
+        }
+    };
+
+
+	// After testing, the time for creating and destroying threads is negligible.
+	clock_t start = clock();
+
     for (int i = 0; i < numThread; ++i) {
-        threads.emplace_back([&](int kth) {
-            
-            clock_t start = clock();
-
-            for (int i = 0; i < connCntPerThread; ++i) {
-                Connection conn;
-                char sql[1024] = {0};
-                sprintf(sql, "insert into stu(name, age, sex) values('%s', %d, '%s')", "John", 24, "male");
-                conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-                conn.update(sql);
-            }
-
-            clock_t end = clock();
-            double duration = static_cast<double>(end - start) / CLOCKS_PER_SEC;
-            double milliseconds = duration * 1000;
-            // std::cout << "not use connpool: " << milliseconds << "ms" << std::endl;
-
-            timePerThreadExec[kth] = milliseconds;
-        }, i);
+		std::thread* th = new std::thread(threadFunc, connCntPerThread);
+        threads.emplace_back(th);
     }
 
     for (int i = 0; i < numThread; ++i) {
-        if (threads[i].joinable()) {
-            threads[i].join();
+        if (threads[i]->joinable()) {
+            threads[i]->join();
         }
     }
 
-    double result = 0;
-    for (auto t : timePerThreadExec) result += t;
-
-    return result;
+	clock_t end = clock();
+	double duration = static_cast<double>(end - start) / CLOCKS_PER_SEC;
+    return duration * 1000;
 }
 
 
@@ -53,55 +64,44 @@ double UseConnpoolMultiThread(int numThread, int connCnt) {
 double notUseConnpoolMultiThread(int numThread, int connCnt) {
 
     int connCntPerThread = connCnt / numThread;
-    std::vector<std::thread> threads;
+    std::vector<std::shared_ptr<std::thread>> threads;
     std::vector<double> timePerThreadExec(numThread, 0);
-    std::cout << connCntPerThread << std::endl;
 
     {
         Connection conn;
         char sql[1024] = {0};
         sprintf(sql, "delete from stu;");
-        conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
+        conn.connect(ip, port, username, password, dbname);
         conn.update(sql);
     }
-
-
-    auto threadFunc = [&](int kth) {
-            
-        clock_t start = clock();
-        for (int i = 0; i < connCntPerThread; ++i) {
+  
+    auto threadFunc = [](int cntConn) {
+        for (int i = 0; i < cntConn; ++i) {
             Connection conn;
             char sql[1024] = {0};
             sprintf(sql, "insert into stu(name, age, sex) values('%s', %d, '%s')", "John", 24, "male");
-            conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
+            conn.connect(ip, port, username, password, dbname);
             conn.update(sql);
         }
-
-        clock_t end = clock();
-        double duration = static_cast<double>(end - start) / CLOCKS_PER_SEC;
-        double milliseconds = duration * 1000;
-
-        timePerThreadExec[kth] = milliseconds;
-        // printf("kth=%d, spend time=%10.2f\n", kth, milliseconds);
-
     };
 
+	// After testing, the time for creating and destroying threads is negligible.
+	clock_t start = clock();
 
     for (int i = 0; i < numThread; ++i) {
-        threads.emplace_back(threadFunc, i);
+		std::thread* th = new std::thread(threadFunc, connCntPerThread);
+        threads.emplace_back(th);
     }
 
-
     for (int i = 0; i < numThread; ++i) {
-        if (threads[i].joinable()) {
-            threads[i].join();
+        if (threads[i]->joinable()) {
+            threads[i]->join();
         }
     }
 
-    double result = 0;
-    for (auto& t : timePerThreadExec) result += t;
-
-    return result;
+	clock_t end = clock();
+	double duration = static_cast<double>(end - start) / CLOCKS_PER_SEC;
+    return duration * 1000;
 }
 
 
@@ -109,12 +109,10 @@ double notUseConnpoolMultiThread(int numThread, int connCnt) {
 
 int main() {
 
-#if 1
-
-
+	// Each test should first create a table for the data to be inserted.
     {
         Connection conn;
-        conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
+        conn.connect(ip, port, username, password, dbname);
 
         char sql[1024] = {0};
         sprintf(sql, "drop table chat.stu;");
@@ -132,167 +130,31 @@ int main() {
     int stepNumConn = maxNumConn / stepLenConn;
 
 
+#if 0
+
     std::cout << "\n\n --- not use connpool --- \n" << std::endl; 
-    std::vector<std::vector<double>> resultNotUsePool(maxNumThread, std::vector<double>(stepNumConn, 0));
     for (int i = 1; i <= maxNumThread; i++) {
         for (int j = 1; j <= stepNumConn; j++) {
-            resultNotUsePool[i - 1][j - 1] = notUseConnpoolMultiThread(2, 8000);
-            printf("threadNum: %3d, connNum: %6d, spend time: %10.2f\n", 2, 8000, resultNotUsePool[i - 1][j - 1]);
+            double result = notUseConnpoolMultiThread(i, j * stepLenConn);
+            printf("threadNum:%2d, connNum:%5d, spend time:%6.0fms\n", i, j * stepLenConn, result);
         }
     }
 
+#endif
 
-#if 0
+#if 1
 
     std::cout << "\n\n --- use connpool --- \n" << std::endl; 
-    std::vector<std::vector<double>> resultUsePool(maxNumThread, std::vector<double>(stepNumConn, 0));
     for (int i = 1; i <= maxNumThread; i++) {
         for (int j = 1; j <= stepNumConn; j++) {
-            resultNotUsePool[i - 1][j - 1] = UseConnpoolMultiThread(i, j * stepLenConn);
+            double result = UseConnpoolMultiThread(i, j * stepLenConn);
+			printf("threadNum:%2d, connNum:%5d, spend time:%6.0fms\n", i, j * stepLenConn, result);
         }
     }
 
 #endif
 
     printf("\n\n\n");
-
-
-#endif
-
-	// Connection conn;
-	// conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-
-	/*Connection conn;
-	char sql[1024] = { 0 };
-	sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-		"zhang san", 20, "male");
-	conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-	conn.update(sql);*/
-
-	// clock_t begin = clock();
-	
-	// std::thread t1([]() {
-	// 	//ConnectionPool *cp = ConnectionPool::getConnectionPool();
-	// 	for (int i = 0; i < 4000; ++i)
-	// 	{
-	// 		/*char sql[1024] = { 0 };
-	// 		sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-	// 			"zhang san", 20, "male");
-	// 		shared_ptr<Connection> sp = cp->getConnection();
-	// 		sp->update(sql);*/
-	// 		Connection conn;
-	// 		char sql[1024] = { 0 };
-	// 		sprintf(sql, "insert into stu(name,age,sex) values('%s',%d,'%s')",
-	// 			"zhang san", 20, "male");
-	// 		conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-	// 		conn.update(sql);
-	// 	}
-	// });
-
-
-	// std::thread t2([]() {
-	// 	//ConnectionPool *cp = ConnectionPool::getConnectionPool();
-	// 	for (int i = 0; i < 4000; ++i)
-	// 	{
-	// 		/*char sql[1024] = { 0 };
-	// 		sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-	// 			"zhang san", 20, "male");
-	// 		shared_ptr<Connection> sp = cp->getConnection();
-	// 		sp->update(sql);*/
-	// 		Connection conn;
-	// 		char sql[1024] = { 0 };
-	// 		sprintf(sql, "insert into stu(name,age,sex) values('%s',%d,'%s')",
-	// 			"zhang san", 20, "male");
-	// 		conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-	// 		conn.update(sql);
-	// 	}
-	// });
-
-#if 0
-
-
-	std::thread t3([]() {
-		//ConnectionPool *cp = ConnectionPool::getConnectionPool();
-		for (int i = 0; i < 2500; ++i)
-		{
-			/*char sql[1024] = { 0 };
-			sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-				"zhang san", 20, "male");
-			shared_ptr<Connection> sp = cp->getConnection();
-			sp->update(sql);*/
-			Connection conn;
-			char sql[1024] = { 0 };
-			sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-				"zhang san", 20, "male");
-			conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-			conn.update(sql);
-		}
-	});
-	std::thread t4([]() {
-		//ConnectionPool *cp = ConnectionPool::getConnectionPool();
-		for (int i = 0; i < 2500; ++i)
-		{
-			/*char sql[1024] = { 0 };
-			sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-				"zhang san", 20, "male");
-			shared_ptr<Connection> sp = cp->getConnection();
-			sp->update(sql);*/
-			Connection conn;
-			char sql[1024] = { 0 };
-			sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-				"zhang san", 20, "male");
-			conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-			conn.update(sql);
-		}
-	});
-
-#endif
-
-	// t1.join();
-	// t2.join();
-
-#if 0
-
-	t3.join();
-	t4.join();
-
-#endif
-
-	// clock_t end = clock();
-	// std::cout << (end - begin) / 1000 << "ms" << std::endl;
-
-
-#if 0
-	for (int i = 0; i < 10000; ++i)
-	{
-		Connection conn;
-		char sql[1024] = { 0 };
-		sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-			"zhang san", 20, "male");
-		conn.connect("127.0.0.1", 3306, "root", "123456", "chat");
-		conn.update(sql);
-
-		/*shared_ptr<Connection> sp = cp->getConnection();
-		char sql[1024] = { 0 };
-		sprintf(sql, "insert into user(name,age,sex) values('%s',%d,'%s')",
-			"zhang san", 20, "male");
-		sp->update(sql);*/
-	}
-#endif
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     return 0;
 }
 
