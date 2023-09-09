@@ -22,32 +22,37 @@
 
 class Connection {
 public:
-    Connection() {
-        _conn = mysql_init(nullptr);
-    }
+    Connection() { _conn = mysql_init(nullptr); }
     ~Connection() {
         if (_conn != nullptr) {
             mysql_close(_conn);
         }
     }
-    bool connect(std::string ip, unsigned short port, 
-                 std::string user, std::string password, std::string dbname) {
-        MYSQL *p = mysql_real_connect(_conn, ip.c_str(), 
-            user.c_str(), password.c_str(), dbname.c_str(), port, nullptr, 0);
+
+    bool connect(std::string ip, unsigned short port, std::string user, std::string password, std::string dbname) {
+        MYSQL *p = mysql_real_connect(_conn, ip.c_str(), user.c_str(), password.c_str(), dbname.c_str(), port, nullptr, 0);
         return p != nullptr;
     }
+
     // insert/delete/update
     bool update(std::string sql) {
         if (mysql_query(_conn, sql.c_str())) {
-            LOG("update failed:" + sql);
+            LOG("update failed: " + sql);
             return false;
         }
         return true;
     }
+
     // select
     MYSQL_RES* query(std::string sql) {
+
+        // mysql_query 函数用于执行各种 SQL 查询，包括 SELECT、INSERT、UPDATE、DELETE 等，具体取决于提供的查询字符串。
+        // 函数返回一个整数值，表示查询执行的结果：
+        // 如果查询成功执行，返回值为 0。
+        // 如果查询失败，返回值为非零，表示错误码。可以使用 mysql_error 函数来获取详细的错误信息。
+
         if (mysql_query(_conn, sql.c_str())) {
-            LOG("select failed:" + sql);
+            LOG("select failed: " + sql);
             return nullptr;
         }
         return mysql_use_result(_conn);
@@ -83,11 +88,11 @@ public:
     }
 
     std::shared_ptr<Connection> getConnection() {
-        std::unique_lock<std::mutex> lock(_queueMutex);
-        if (_connectionQue.empty()) {
-            if (std::cv_status::timeout == cv.wait_for(lock, 
-                std::chrono::milliseconds(_connectionTimeout))) {
-                if (_connectionQue.empty()) {
+        std::unique_lock<std::mutex> lock(_queMutex);
+        if (_connQue.empty()) {
+            if (std::cv_status::timeout == _condVar.wait_for(lock, 
+                std::chrono::milliseconds(_connTimeout))) {
+                if (_connQue.empty()) {
                     LOG("Obtaining idle connection timed out!");
                     return nullptr;
                 }
@@ -97,16 +102,16 @@ public:
         // shared_ptr智能指针析构时，会把connection资源直接delete掉
         // 相当于调用connection的析构函数，connection就被close掉了
         // 这里需要自定义shared_ptr的资源释放的方式，把connection直接归还到queue当中
-        std::shared_ptr<Connection> sp(_connectionQue.front(), 
+        std::shared_ptr<Connection> sp(_connQue.front(), 
             [&](Connection *pcon) { 
-                std::unique_lock<std::mutex> lock(_queueMutex);
+                std::unique_lock<std::mutex> lock(_queMutex);
                 pcon->refreshAliveTime();
-                _connectionQue.push(pcon); 
+                _connQue.push(pcon); 
             });
 
-        _connectionQue.pop();
-        if (_connectionQue.empty()) {
-            cv.notify_all(); // 谁消费了队列中的最后一个conncection，谁负责通知一下生产者生产
+        _connQue.pop();
+        if (_connQue.empty()) {
+            _condVar.notify_all(); // 谁消费了队列中的最后一个conncection，谁负责通知一下生产者生产
         }
 
         return sp;
@@ -152,7 +157,7 @@ private:
             } else if (key == "maxIdleTime") {
                 _maxIdleTime = atoi(value.c_str());
             } else if (key == "connectionTimeOut") {
-                _connectionTimeout = atoi(value.c_str());
+                _connTimeout = atoi(value.c_str());
             }
         } // while
         return true;
@@ -160,18 +165,18 @@ private:
 
     void produceConnectionTask() {
         for ( ; ; ) {
-            std::unique_lock<std::mutex> lock(_queueMutex);
-            while (!_connectionQue.empty()) {
-                cv.wait(lock);  // 队列不空，此处生产线程进入等待状态
+            std::unique_lock<std::mutex> lock(_queMutex);
+            while (!_connQue.empty()) {
+                _condVar.wait(lock);  // 队列不空，此处生产线程进入等待状态
             }
-            if (_connectionCnt < _maxSize) {
+            if (_connCnt < _maxSize) {
                 Connection *p = new Connection();
                 p->connect(_ip, _port, _username, _password, _dbname);
                 p->refreshAliveTime();
-                _connectionQue.push(p);
-                _connectionCnt++;
+                _connQue.push(p);
+                _connCnt++;
             }
-            cv.notify_all();
+            _condVar.notify_all();
         }
     }
 
@@ -181,12 +186,12 @@ private:
             std::this_thread::sleep_for(std::chrono::seconds(_maxIdleTime));
 
             // 扫描整个队列，释放多余的连接
-            std::unique_lock<std::mutex> lock(_queueMutex);
-            while (_connectionCnt > _initSize) {
-                Connection *p = _connectionQue.front();
+            std::unique_lock<std::mutex> lock(_queMutex);
+            while (_connCnt > _initSize) {
+                Connection *p = _connQue.front();
                 if (p->getAliveTime() >= (_maxIdleTime * 1000)) {
-                    _connectionQue.pop();
-                    _connectionCnt--;
+                    _connQue.pop();
+                    _connCnt--;
                     delete p; // 调用~Connection()释放连接
                 } else {
                     break; // 队头的连接没有超过_maxIdleTime，其它连接肯定没有
@@ -201,8 +206,8 @@ private:
             Connection *p = new Connection();
             p->connect(_ip, _port, _username, _password, _dbname);
             p->refreshAliveTime();
-            _connectionQue.push(p);
-            _connectionCnt++;
+            _connQue.push(p);
+            _connCnt++;
         }
         
         std::thread produce(std::bind(&ConnectionPool::produceConnectionTask, this));
@@ -214,21 +219,21 @@ private:
     }
 
 private:
-    std::string _ip;
+    std::string    _ip;
     unsigned short _port;
-    std::string _username;
-    std::string _password;
-    std::string _dbname;
+    std::string    _username;
+    std::string    _password;
+    std::string    _dbname;
 
     int _initSize;
     int _maxSize;
     int _maxIdleTime;
-    int _connectionTimeout;
+    int _connTimeout;
 
-    std::queue<Connection*> _connectionQue;
-    std::mutex _queueMutex;
-    std::atomic_int _connectionCnt;
-    std::condition_variable cv;
+    std::queue<Connection*> _connQue;
+    std::mutex              _queMutex;
+    std::atomic_int         _connCnt;
+    std::condition_variable _condVar;
 };
 
 

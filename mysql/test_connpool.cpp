@@ -3,9 +3,6 @@
 #include "src/connpool.hpp"
 
 
-
-
-
 double useConnpool(int connCnt) {
     ConnectionPool *cp = ConnectionPool::getConnectionPool();
     clock_t start = clock();
